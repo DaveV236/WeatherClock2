@@ -246,7 +246,7 @@ unsigned long lastWeatherUpdate = 0;
 
 const unsigned long
     weatherInterval =
-    900000;         // 15 minutes between OpenWeather updates
+    600000;         // 10 minutes between OpenWeather updates
 
 
 
