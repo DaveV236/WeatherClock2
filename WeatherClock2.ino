@@ -97,16 +97,47 @@ void stopThrob(lv_obj_t *obj)
     lv_obj_set_style_text_opa(obj, LV_OPA_COVER, 0);    // back to solid
 }
 
-// ---- "Weather data provided by OpenWeather" ticker ----
-// Small text that scrolls right-to-left across the bottom of a screen,
-// entering at the right edge and leaving at the left, then repeating.
+// ---- "Weather data provided by OpenWeather" credit ----
+// Small text that slides in from the right edge each time its screen
+// opens, stops centred, and stays there while the screen is shown.
 
 #define CREDIT_TEXT        "Weather data provided by OpenWeather"
-#define CREDIT_SPEED_PX_S  40          // scroll speed, pixels per second
+#define CREDIT_SPEED_PX_S  60          // slide-in speed, pixels per second
 
 static void creditExec(void *obj, int32_t x)
 {
     lv_obj_set_x((lv_obj_t *)obj, x);
+}
+
+// screen starting to slide in: park the text just off the right edge
+static void creditReset(lv_event_t *e)
+{
+    lv_obj_t *lbl = (lv_obj_t *)lv_event_get_user_data(e);
+
+    lv_anim_delete(lbl, creditExec);
+    lv_obj_set_x(lbl, 320);
+}
+
+// screen fully shown: slide the text in and stop when centred
+static void creditStart(lv_event_t *e)
+{
+    lv_obj_t *lbl = (lv_obj_t *)lv_event_get_user_data(e);
+
+    int32_t textW = lv_obj_get_width(lbl);
+    int32_t centreX = (320 - textW) / 2;
+
+    lv_anim_delete(lbl, creditExec);
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+
+    lv_anim_set_var(&a, lbl);
+    lv_anim_set_exec_cb(&a, creditExec);
+    lv_anim_set_values(&a, 320, centreX);
+    lv_anim_set_duration(&a, (uint32_t)((320 - centreX) * 1000 / CREDIT_SPEED_PX_S));
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);    // eases to a gentle stop
+
+    lv_anim_start(&a);      // plays once, then the text stays centred
 }
 
 lv_obj_t *addCreditTicker(lv_obj_t *parent, int y, uint32_t color)
@@ -119,25 +150,18 @@ lv_obj_t *addCreditTicker(lv_obj_t *parent, int y, uint32_t color)
     lv_obj_set_style_text_opa(lbl, LV_OPA_70, 0);      // "small print"
     lv_obj_remove_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
 
-    lv_obj_set_pos(lbl, 320, y);
+    // The text starts off-screen. Without this, LVGL would make the
+    // screen scrollable and show a moving scrollbar.
+    lv_obj_add_flag(lbl, LV_OBJ_FLAG_FLOATING);             // don't count it in the screen's size
+    lv_obj_remove_flag(parent, LV_OBJ_FLAG_SCROLLABLE);     // screen never scrolls
+    lv_obj_set_scrollbar_mode(parent, LV_SCROLLBAR_MODE_OFF);
 
-    // width of the text so it can scroll fully off the left edge
-    lv_obj_update_layout(lbl);
-    int32_t textW = lv_obj_get_width(lbl);
+    lv_obj_set_pos(lbl, 320, y);           // waiting off the right edge
+    lv_obj_update_layout(lbl);             // so its width is known
 
-    int32_t travel = 320 + textW;
-
-    lv_anim_t a;
-    lv_anim_init(&a);
-
-    lv_anim_set_var(&a, lbl);
-    lv_anim_set_exec_cb(&a, creditExec);
-    lv_anim_set_values(&a, 320, -textW);
-    lv_anim_set_duration(&a, (uint32_t)(travel * 1000 / CREDIT_SPEED_PX_S));
-    lv_anim_set_path_cb(&a, lv_anim_path_linear);
-    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
-
-    lv_anim_start(&a);      // removed automatically if the screen is deleted
+    // replay the slide-in every time this screen is opened
+    lv_obj_add_event_cb(parent, creditReset, LV_EVENT_SCREEN_LOAD_START, lbl);
+    lv_obj_add_event_cb(parent, creditStart, LV_EVENT_SCREEN_LOADED, lbl);
 
     return lbl;
 }
@@ -184,7 +208,7 @@ void applyTimeZone(long offsetSec)
 // =====================================================
 // UPDATE WEATHER
 // =====================================================
-const char* OWM_API_KEY = "insert your key here"; 
+const char* OWM_API_KEY = "insert your key here";
 
 // Defaults - used until a city is saved from the City screen
 const char* DEFAULT_CITY     = "Belton";
