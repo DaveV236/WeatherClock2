@@ -97,6 +97,51 @@ void stopThrob(lv_obj_t *obj)
     lv_obj_set_style_text_opa(obj, LV_OPA_COVER, 0);    // back to solid
 }
 
+// ---- "Weather data provided by OpenWeather" ticker ----
+// Small text that scrolls right-to-left across the bottom of a screen,
+// entering at the right edge and leaving at the left, then repeating.
+
+#define CREDIT_TEXT        "Weather data provided by OpenWeather"
+#define CREDIT_SPEED_PX_S  40          // scroll speed, pixels per second
+
+static void creditExec(void *obj, int32_t x)
+{
+    lv_obj_set_x((lv_obj_t *)obj, x);
+}
+
+lv_obj_t *addCreditTicker(lv_obj_t *parent, int y, uint32_t color)
+{
+    lv_obj_t *lbl = lv_label_create(parent);
+
+    lv_label_set_text(lbl, CREDIT_TEXT);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(color), 0);
+    lv_obj_set_style_text_opa(lbl, LV_OPA_70, 0);      // "small print"
+    lv_obj_remove_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_set_pos(lbl, 320, y);
+
+    // width of the text so it can scroll fully off the left edge
+    lv_obj_update_layout(lbl);
+    int32_t textW = lv_obj_get_width(lbl);
+
+    int32_t travel = 320 + textW;
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+
+    lv_anim_set_var(&a, lbl);
+    lv_anim_set_exec_cb(&a, creditExec);
+    lv_anim_set_values(&a, 320, -textW);
+    lv_anim_set_duration(&a, (uint32_t)(travel * 1000 / CREDIT_SPEED_PX_S));
+    lv_anim_set_path_cb(&a, lv_anim_path_linear);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+
+    lv_anim_start(&a);      // removed automatically if the screen is deleted
+
+    return lbl;
+}
+
 // =====================================================
 // TIME
 // =====================================================
@@ -139,7 +184,7 @@ void applyTimeZone(long offsetSec)
 // =====================================================
 // UPDATE WEATHER
 // =====================================================
-const char* OWM_API_KEY = "insert your key here";
+const char* OWM_API_KEY = "insert your key here"; 
 
 // Defaults - used until a city is saved from the City screen
 const char* DEFAULT_CITY     = "Belton";
@@ -177,7 +222,7 @@ unsigned long lastWeatherUpdate = 0;
 
 const unsigned long
     weatherInterval =
-    600000;
+    900000;         // 15 minutes between OpenWeather updates
 
 
 
@@ -198,10 +243,10 @@ const unsigned long
 
 int brightnessPercent = 100;
 
-// Auto Dim: 1% at sunset, 80% at sunrise (weather city's sun times)
+// Auto Dim: 5% at sunset, 100% at sunrise (weather city's sun times)
 bool autoDimEnabled = false;
 int  autoDimPhase = -1;             // -1 unknown, 0 night, 1 day
-#define AUTO_DIM_NIGHT_PERCENT  1      // default low limit (after sunset)
+#define AUTO_DIM_NIGHT_PERCENT  2      // default low limit (after sunset)
 #define AUTO_DIM_DAY_PERCENT    80     // default high limit (after sunrise)
 
 // user-adjustable limits, set with the range slider on Settings
@@ -362,6 +407,7 @@ lv_obj_t *sunriseLabel = nullptr;
 lv_obj_t *sunsetLabel = nullptr;
 
 lv_obj_t *weatherIcon = nullptr;
+lv_obj_t *weatherCredit = nullptr;      // scrolling OpenWeather credit
 
 // =====================================================
 // PICTURES OBJECTS
@@ -1869,6 +1915,9 @@ void createWeatherScreen()
         LV_ALIGN_TOP_MID,
         0,
         407);
+
+    // OpenWeather credit, scrolling between the sunset line and the dots
+    weatherCredit = addCreditTicker(weatherScreen, 430, weatherTextColor);
 
     createPageDots(weatherScreen);
 }
@@ -3502,7 +3551,8 @@ void applyWeatherColors()
     lv_obj_t *labels[] =
     {
         timeLabel, dateLabel, cityNameLabel, tempLabel,
-        feelsLikeLabel, humidityLabel, sunriseLabel, sunsetLabel
+        feelsLikeLabel, humidityLabel, sunriseLabel, sunsetLabel,
+        weatherCredit
     };
 
     for (lv_obj_t *l : labels)
@@ -4334,6 +4384,9 @@ void createWindScreen()
     windGustLabel = lv_label_create(windScreen);
     lv_obj_align(windGustLabel, LV_ALIGN_TOP_MID, 0, 428);
 
+    // OpenWeather credit along the bottom
+    addCreditTicker(windScreen, 458, weatherTextColor);
+
     lv_obj_add_event_cb(
         windScreen,
         [](lv_event_t *e)
@@ -4738,6 +4791,9 @@ void createForecastScreen()
         [](lv_event_t *e) { forecastScreen = nullptr; },
         LV_EVENT_DELETE,
         NULL);
+
+    // OpenWeather credit along the bottom, below the last row
+    addCreditTicker(forecastScreen, 458, weatherTextColor);
 
     applyForecastColors();
 }
