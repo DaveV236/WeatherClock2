@@ -4524,7 +4524,9 @@ void updateWindScreen()
     lv_label_set_text(windSpeedLabel, buf);
 
     if (haveDir)
-        lv_label_set_text_fmt(windFromLabel, "%s from the %s (%d deg)",
+        // shorter wording so it fits on one line, e.g.
+        // "Moderate breeze from WNW, 292 deg"
+        lv_label_set_text_fmt(windFromLabel, "%s from %s, %d deg",
                               windDescription(currentWindMph),
                               compassName(currentWindDeg),
                               currentWindDeg);
@@ -4683,6 +4685,10 @@ void createWindScreen()
     windFromLabel = lv_label_create(windScreen);
     lv_obj_set_width(windFromLabel, 300);
     lv_obj_set_style_text_align(windFromLabel, LV_TEXT_ALIGN_CENTER, 0);
+
+    // never wrap onto the Gusts line: if the text is ever too wide,
+    // it scrolls sideways within its own line instead
+    lv_label_set_long_mode(windFromLabel, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_align(windFromLabel, LV_ALIGN_TOP_MID, 0, 402);
 
     windGustLabel = lv_label_create(windScreen);
