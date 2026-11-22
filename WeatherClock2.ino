@@ -101,6 +101,10 @@ void stopThrob(lv_obj_t *obj)
 // Small text that slides in from the right edge each time its screen
 // opens, stops centred, and stays there while the screen is shown.
 
+// Degree sign (U+00B0, UTF-8). LVGL's built-in Montserrat fonts include it.
+// Kept as its own string so "\xB0" isn't merged with a following letter.
+#define DEG "\xC2\xB0"
+
 #define CREDIT_TEXT        "Weather data by Open-Meteo.com"
 #define CREDIT_SPEED_PX_S  60          // slide-in speed, pixels per second
 
@@ -2048,7 +2052,7 @@ void createWeatherScreen()
 
     lv_label_set_text(
         tempLabel,
-        "--F");
+        "--" DEG "F");
 
     lv_obj_align(
         tempLabel,
@@ -2075,7 +2079,7 @@ void createWeatherScreen()
 
     lv_label_set_text(
         feelsLikeLabel,
-        "Feels like --F");
+        "Feels like --" DEG "F");
 
     lv_obj_align(
         feelsLikeLabel,
@@ -4825,6 +4829,76 @@ bool getForecast()
 
 // ---------------- screen ----------------
 
+// ---------------- auto-size the temperature column ----------------
+// All five rows share one font size. Start at 28 pt and step down until
+// the widest "hi° / lo°" fits between its start (x = FC_TEMP_X) and the
+// rain chance on the right. Only fonts enabled in lv_conf.h are tried;
+// enabling LV_FONT_MONTSERRAT_26 / 24 / 22 / 20 gives smoother steps.
+
+#define FC_TEMP_X     160       // left edge of the temperature text
+#define FC_RIGHT_X    310       // right margin of a row
+#define FC_GAP        6         // space kept before the rain chance
+
+static const lv_font_t *const fcTempFonts[] =
+{
+    &lv_font_montserrat_28,
+#if LV_FONT_MONTSERRAT_26
+    &lv_font_montserrat_26,
+#endif
+#if LV_FONT_MONTSERRAT_24
+    &lv_font_montserrat_24,
+#endif
+#if LV_FONT_MONTSERRAT_22
+    &lv_font_montserrat_22,
+#endif
+#if LV_FONT_MONTSERRAT_20
+    &lv_font_montserrat_20,
+#endif
+#if LV_FONT_MONTSERRAT_18
+    &lv_font_montserrat_18,
+#endif
+#if LV_FONT_MONTSERRAT_16
+    &lv_font_montserrat_16,
+#endif
+    &lv_font_montserrat_14
+};
+
+void fitForecastTemps()
+{
+    if (!forecastScreen)
+        return;
+
+    lv_obj_update_layout(forecastScreen);
+
+    // widest rain-chance text on any row (0 if no rain anywhere)
+    int32_t popW = 0;
+
+    for (int i = 0; i < FC_DAYS; i++)
+        if (forecast[i].valid && forecast[i].pop > 0)
+            popW = max(popW, lv_obj_get_width(fcPop[i]));
+
+    int32_t avail = FC_RIGHT_X - FC_TEMP_X - (popW > 0 ? popW + FC_GAP : 0);
+
+    const int nFonts = sizeof(fcTempFonts) / sizeof(fcTempFonts[0]);
+
+    for (int f = 0; f < nFonts; f++)
+    {
+        for (int i = 0; i < FC_DAYS; i++)
+            lv_obj_set_style_text_font(fcTemps[i], fcTempFonts[f], 0);
+
+        lv_obj_update_layout(forecastScreen);
+
+        int32_t widest = 0;
+
+        for (int i = 0; i < FC_DAYS; i++)
+            if (forecast[i].valid)
+                widest = max(widest, lv_obj_get_width(fcTemps[i]));
+
+        if (widest <= avail)
+            break;              // this size fits every row (else use the smallest)
+    }
+}
+
 void updateForecastScreen()
 {
     static const char *days[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
@@ -4848,7 +4922,7 @@ void updateForecastScreen()
         lv_label_set_text(fcDay[i], i == 0 ? "Today" : days[d.weekday]);
 
         // (LVGL's _fmt can't print floats, so use snprintf)
-        snprintf(buf, sizeof(buf), "%.0f / %.0f", d.hi, d.lo);
+        snprintf(buf, sizeof(buf), "%.0f" DEG " / %.0f" DEG, d.hi, d.lo);   // e.g. 61° / 47°
         lv_label_set_text(fcTemps[i], buf);
 
         if (d.pop > 0)
@@ -4862,6 +4936,8 @@ void updateForecastScreen()
 
     snprintf(buf, sizeof(buf), "%d-Day Forecast", shown > 0 ? shown : FC_DAYS);
     lv_label_set_text(fcTitle, buf);
+
+    fitForecastTemps();
 }
 
 void showForecastStatus(const char *msg)
@@ -4961,7 +5037,7 @@ void createForecastScreen()
 
         fcTemps[i] = lv_label_create(row);
         lv_obj_set_style_text_font(fcTemps[i], &lv_font_montserrat_28, 0);
-        lv_obj_align(fcTemps[i], LV_ALIGN_LEFT_MID, 160, 0);
+        lv_obj_align(fcTemps[i], LV_ALIGN_LEFT_MID, FC_TEMP_X, 0);
 
         fcPop[i] = lv_label_create(row);
         lv_obj_set_style_text_align(fcPop[i], LV_TEXT_ALIGN_RIGHT, 0);
@@ -5420,7 +5496,7 @@ void updateWeatherDisplay()
 
     sprintf(
         buffer,
-        "%.0fF",
+        "%.0f" DEG "F",            // e.g. 72°F
         currentTemp);
 
     lv_label_set_text(
@@ -5431,7 +5507,7 @@ void updateWeatherDisplay()
     {
         sprintf(
             buffer,
-            "Feels like %.0fF",
+            "Feels like %.0f" DEG "F",
             currentFeelsLike);
 
         lv_label_set_text(
