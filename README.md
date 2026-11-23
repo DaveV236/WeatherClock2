@@ -1,10 +1,14 @@
 WeatherClock2.ino draws its weather data from Open-Meteo.com and does not require a key. The sketch includes an attribution banner crediting the weather data source as required by the free license agreement.
 
+See sketch for required libraries
+
 Required Arduino IDE settings:
 
 Set Tools > Partition Scheme to "Huge APP (3MB no OTA/1MB SPIFFS)"
 
-lv\_conf.h is required, and the following font sizes are to be enabled:
+lv_conf.h is required: (Windows users should find it here: C:\Users\{username}\Documents\Arduino\libraries\lvgl\src\)
+
+The following font sizes are to be enabled in this file:
 
 #define LV\_FONT\_MONTSERRAT\_14 1
 
@@ -18,5 +22,5 @@ lv\_conf.h is required, and the following font sizes are to be enabled:
 
 This sketch is provided for personal/hobby use only, not for commercial purposes.
 
-3D printable case can be found here: https://www.thingiverse.com/thing:7436303
+A 3D printable case along with the hardware requirements can be found here: https://www.thingiverse.com/thing:7436303
 

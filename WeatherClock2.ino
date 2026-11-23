@@ -245,10 +245,25 @@ struct ForecastDay
     float hi;
     int   pop;          // max chance of precipitation, %
     String icon;        // icon id, e.g. "10d"
+    int   code;         // day's weather code (picks "rain" / "snow" / ...)
     int   weekday;      // 0 = Sun
 };
 
 ForecastDay forecast[FC_DAYS];
+
+// ---- Saved Cities history (defined up here so the Arduino IDE's
+//      automatic function declarations can see the type) ----
+#define CITY_HIST_MAX 8          // how many Saved Cities to keep
+
+struct SavedCity
+{
+    String city;
+    String state;
+    String country;
+    float  lat;
+    float  lon;
+};
+
 
 unsigned long lastForecastFetch = 0;
 String forecastPlaceKey;                   // which city the data is for
@@ -426,6 +441,7 @@ lv_obj_t *cityScreen;
 lv_obj_t *colorScreen;
 lv_obj_t *windScreen = nullptr;
 lv_obj_t *forecastScreen = nullptr;
+lv_obj_t *savedScreen = nullptr;        // Saved Cities
 
 
 // =====================================================
@@ -442,7 +458,8 @@ enum ScreenID
     SCREEN_CITY,
     SCREEN_COLORS,
     SCREEN_WIND,
-    SCREEN_FORECAST
+    SCREEN_FORECAST,
+    SCREEN_SAVEDCITIES
 };
 
 ScreenID currentScreen = SCREEN_HOME;
@@ -543,9 +560,12 @@ void goToSettings();
 void goToPictures();
 void goToWifiSetup();
 void goToCity();
+void goToAddCity();
 void goToWeatherColors();
 void goToWind();
 void goToForecast();
+void goToSavedCities();
+void addCityToHistory();
 void weatherIconClicked(lv_event_t *e);
 void applyForecastColors();
 void pollForecastFetch();
@@ -1009,6 +1029,7 @@ void gestureEvent(lv_event_t *e)
 
         case SCREEN_WIND:
         case SCREEN_FORECAST:
+        case SCREEN_SAVEDCITIES:
 
             if(dir == LV_DIR_RIGHT)
                 goBackToWeather();
@@ -1490,8 +1511,12 @@ bool getWeather()
     }
 
     // first run (or city saved while offline): find its coordinates
+    bool lookedUpNow = false;
+
     if (!haveCoords)
     {
+        lookedUpNow = true;
+
         if (geocodeCity(weatherCity, weatherState, weatherCountry) != 1)
         {
             Serial.println("Weather: city lookup failed");
@@ -1722,12 +1747,17 @@ bool getWeather()
         d.hi      = daily["temperature_2m_max"][i].as<float>();
         d.lo      = daily["temperature_2m_min"][i].as<float>();
         d.pop     = daily["precipitation_probability_max"][i] | 0;
-        d.icon    = wmoToIcon(daily["weather_code"][i] | -1, true);
+        d.code    = daily["weather_code"][i] | -1;
+        d.icon    = wmoToIcon(d.code, true);
         d.weekday = (int)((localDay + 4) % 7);   // 1 Jan 1970 was a Thursday
     }
 
     lastForecastFetch = millis();
     forecastPlaceKey = weatherCity + "," + weatherState + "," + weatherCountry;
+
+    // a newly looked-up city has now supplied weather -> Saved Cities
+    if (lookedUpNow)
+        addCityToHistory();
 
     Serial.printf(
         "Temp: %.1fF  Humidity: %.0f%%  Condition: %s\n",
@@ -1920,6 +1950,61 @@ void drawWeatherIcon(const String &code)
 // WEATHER SCREEN
 // =====================================================
 
+// ---------------- city name: shrink the font for long names ----------------
+// Uses the largest font that fits the name on one line within 300 px.
+// Only fonts enabled in lv_conf.h are tried (26/24/22/20/18/16 give
+// smoother steps); if even 14 pt is too wide, the name ends in "...".
+
+#define CITY_NAME_MAX_W  300
+
+static const lv_font_t *const cityNameFonts[] =
+{
+    &lv_font_montserrat_28,
+#if LV_FONT_MONTSERRAT_26
+    &lv_font_montserrat_26,
+#endif
+#if LV_FONT_MONTSERRAT_24
+    &lv_font_montserrat_24,
+#endif
+#if LV_FONT_MONTSERRAT_22
+    &lv_font_montserrat_22,
+#endif
+#if LV_FONT_MONTSERRAT_20
+    &lv_font_montserrat_20,
+#endif
+#if LV_FONT_MONTSERRAT_18
+    &lv_font_montserrat_18,
+#endif
+#if LV_FONT_MONTSERRAT_16
+    &lv_font_montserrat_16,
+#endif
+    &lv_font_montserrat_14
+};
+
+void fitCityNameFont()
+{
+    if (!cityNameLabel)
+        return;
+
+    const int n = sizeof(cityNameFonts) / sizeof(cityNameFonts[0]);
+
+    // measure the text at its natural width
+    lv_obj_set_width(cityNameLabel, LV_SIZE_CONTENT);
+
+    for (int f = 0; f < n; f++)
+    {
+        lv_obj_set_style_text_font(cityNameLabel, cityNameFonts[f], 0);
+        lv_obj_update_layout(cityNameLabel);
+
+        if (lv_obj_get_width(cityNameLabel) <= CITY_NAME_MAX_W)
+            break;              // fits (otherwise the last, smallest font stays)
+    }
+
+    // back to the fixed, centred 300 px box ("..." only if still too long)
+    lv_obj_set_width(cityNameLabel, CITY_NAME_MAX_W);
+    lv_obj_align(cityNameLabel, LV_ALIGN_TOP_MID, 0, 115);
+}
+
 void createWeatherScreen()
 {
     weatherScreen =
@@ -2108,6 +2193,17 @@ void createWeatherScreen()
     lv_label_set_long_mode(cityNameLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(cityNameLabel, LV_TEXT_ALIGN_CENTER, 0);
 
+    // NEW: the city name is a link to the Saved Cities screen
+    lv_obj_set_style_text_decor(cityNameLabel, LV_TEXT_DECOR_UNDERLINE, 0);
+    lv_obj_add_flag(cityNameLabel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(cityNameLabel, 8);
+
+    lv_obj_add_event_cb(
+        cityNameLabel,
+        [](lv_event_t *e) { goToSavedCities(); },
+        LV_EVENT_CLICKED,
+        NULL);
+
 	lv_obj_set_style_text_font(
         cityNameLabel,
         &lv_font_montserrat_28,
@@ -2118,6 +2214,8 @@ void createWeatherScreen()
         LV_ALIGN_TOP_MID,
         0,
         115);
+
+    fitCityNameFont();          // shrink for long city names
 
     // -----------------------------------
     // HUMIDITY
@@ -3524,6 +3622,7 @@ void submitCity()
     if (found == 1 && getWeather())
     {
         saveCity();
+        addCityToHistory();             // newest entry on the Saved Cities screen
         updateWeatherDisplay();
 
         lastWeatherUpdate = millis();   // just fetched - restart the 15 min timer
@@ -3693,6 +3792,9 @@ void goToCity()
     if (!cityScreen)
         createCityScreen();
 
+    // coming from Saved Cities: delete that screen after the slide
+    bool freeOld = (currentScreen == SCREEN_SAVEDCITIES);
+
     currentScreen = SCREEN_CITY;
 
     // show what's in use now
@@ -3716,7 +3818,18 @@ void goToCity()
         LV_SCR_LOAD_ANIM_OVER_LEFT,
         250,
         0,
-        false);
+        freeOld);
+}
+
+// from Saved Cities: open the City screen with an empty City box
+void goToAddCity()
+{
+    goToCity();
+
+    lv_textarea_set_text(cityTA, "");
+    setCityStatus("Type a city (and State / Country),\nthen tap Save");
+
+    updateCityKeyboardCase(true);       // capital first letter
 }
 
 // =====================================================
@@ -4746,7 +4859,8 @@ void goBackToWeather()
 {
     bool freeOld =
         (currentScreen == SCREEN_WIND ||
-         currentScreen == SCREEN_FORECAST);
+         currentScreen == SCREEN_FORECAST ||
+         currentScreen == SCREEN_SAVEDCITIES);
 
     currentScreen = SCREEN_WEATHER;
 
@@ -4755,7 +4869,7 @@ void goBackToWeather()
         LV_SCR_LOAD_ANIM_OVER_RIGHT,
         250,
         0,
-        freeOld);       // delete Wind / Forecast screen after the slide
+        freeOld);       // delete Wind / Forecast / Saved Cities screen after the slide
 }
 
 // =====================================================
@@ -4899,6 +5013,21 @@ void fitForecastTemps()
     }
 }
 
+// word under the chance-of-precipitation figure, from the day's weather code
+const char *precipWord(int code)
+{
+    if ((code >= 71 && code <= 77) || code == 85 || code == 86)
+        return "snow";                  // snow, snow grains, snow showers
+
+    if (code == 56 || code == 57 || code == 66 || code == 67)
+        return "sleet";                 // freezing drizzle / freezing rain
+
+    if (code >= 95 && code <= 99)
+        return "storm";                 // thunderstorms
+
+    return "rain";                      // rain, drizzle, showers, other
+}
+
 void updateForecastScreen()
 {
     static const char *days[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
@@ -4926,7 +5055,7 @@ void updateForecastScreen()
         lv_label_set_text(fcTemps[i], buf);
 
         if (d.pop > 0)
-            snprintf(buf, sizeof(buf), "%d%%\nrain", d.pop);
+            snprintf(buf, sizeof(buf), "%d%%\n%s", d.pop, precipWord(d.code));
         else
             snprintf(buf, sizeof(buf), " ");
         lv_label_set_text(fcPop[i], buf);
@@ -5167,6 +5296,418 @@ void reportMemory()
 }
 
 // =====================================================
+// SAVED CITIES SCREEN (tap the city name on the Weather screen)
+// =====================================================
+// The last 8 cities weather was drawn from, newest first. Adding a 9th
+// drops the oldest. Tap one to switch to it; Clear empties the list.
+// Stored in flash (Preferences namespace "cityhist").
+
+// (CITY_HIST_MAX and struct SavedCity are defined near the top of the file)
+
+SavedCity cityHist[CITY_HIST_MAX];
+int cityHistCount = 0;
+
+lv_obj_t *savedList = nullptr;
+lv_obj_t *savedStatus = nullptr;
+lv_obj_t *savedTitle = nullptr;
+lv_obj_t *savedClearLbl = nullptr;
+lv_obj_t *savedClearBtn = nullptr;
+
+bool clearArmed = false;                // first tap arms, second tap clears
+lv_timer_t *clearDisarmTimer = nullptr;
+
+// ---------------- storage ----------------
+
+void saveCityHistory()
+{
+    prefs.begin("cityhist", false);
+    prefs.clear();
+    prefs.putInt("n", cityHistCount);
+
+    for (int i = 0; i < cityHistCount; i++)
+    {
+        SavedCity &c = cityHist[i];
+
+        // "City|ST|CC|lat|lon"
+        String rec = c.city + "|" + c.state + "|" + c.country + "|" +
+                     String(c.lat, 4) + "|" + String(c.lon, 4);
+
+        prefs.putString(("c" + String(i)).c_str(), rec);
+    }
+
+    prefs.end();
+}
+
+void loadCityHistory()
+{
+    prefs.begin("cityhist", true);
+
+    int n = constrain(prefs.getInt("n", 0), 0, CITY_HIST_MAX);
+    cityHistCount = 0;
+
+    for (int i = 0; i < n; i++)
+    {
+        String rec = prefs.getString(("c" + String(i)).c_str(), "");
+
+        int p1 = rec.indexOf('|');
+        int p2 = rec.indexOf('|', p1 + 1);
+        int p3 = rec.indexOf('|', p2 + 1);
+        int p4 = rec.indexOf('|', p3 + 1);
+
+        if (p1 < 0 || p2 < 0 || p3 < 0 || p4 < 0)
+            continue;                   // damaged entry - skip it
+
+        SavedCity &c = cityHist[cityHistCount++];
+
+        c.city    = rec.substring(0, p1);
+        c.state   = rec.substring(p1 + 1, p2);
+        c.country = rec.substring(p2 + 1, p3);
+        c.lat     = rec.substring(p3 + 1, p4).toFloat();
+        c.lon     = rec.substring(p4 + 1).toFloat();
+    }
+
+    prefs.end();
+}
+
+// (takes plain Strings, not a SavedCity, so the Arduino IDE's automatic
+//  function declarations at the top of the sketch compile)
+static bool sameCity(const String &aCity, const String &aState, const String &aCountry,
+                     const String &city, const String &state, const String &country)
+{
+    return aCity.equalsIgnoreCase(city) &&
+           aState.equalsIgnoreCase(state) &&
+           aCountry.equalsIgnoreCase(country);
+}
+
+// put the current city at the top (moving it up if already listed)
+void addCityToHistory()
+{
+    if (!haveCoords || weatherCity.length() == 0)
+        return;
+
+    SavedCity entry = { weatherCity, weatherState, weatherCountry,
+                        weatherLat, weatherLon };
+
+    // remove an existing copy so it isn't listed twice
+    int found = -1;
+
+    for (int i = 0; i < cityHistCount; i++)
+        if (sameCity(cityHist[i].city, cityHist[i].state, cityHist[i].country,
+                     weatherCity, weatherState, weatherCountry))
+        {
+            found = i;
+            break;
+        }
+
+    int last = (found >= 0) ? found
+             : min(cityHistCount, CITY_HIST_MAX - 1);   // a 9th drops the oldest
+
+    for (int i = last; i > 0; i--)
+        cityHist[i] = cityHist[i - 1];
+
+    cityHist[0] = entry;
+
+    if (found < 0 && cityHistCount < CITY_HIST_MAX)
+        cityHistCount++;
+
+    saveCityHistory();
+}
+
+// ---------------- screen ----------------
+
+// "City, ST, CC" for list entry i
+static String savedCityText(int i)
+{
+    const SavedCity &c = cityHist[i];
+
+    String t = c.city;
+
+    if (c.state.length())
+        t += ", " + c.state;
+
+    if (c.country.length())
+        t += ", " + c.country;
+
+    return t;
+}
+
+void setSavedStatus(const String &msg)
+{
+    if (savedStatus)
+        lv_label_set_text(savedStatus, msg.c_str());
+}
+
+void savedCityClicked(lv_event_t *e);
+
+void refreshSavedList()
+{
+    if (!savedList)
+        return;
+
+    lv_obj_clean(savedList);
+
+    if (cityHistCount == 0)
+    {
+        lv_list_add_text(savedList, "No saved cities yet");
+        return;
+    }
+
+    for (int i = 0; i < cityHistCount; i++)
+    {
+        String text = savedCityText(i);
+
+        if (sameCity(cityHist[i].city, cityHist[i].state, cityHist[i].country,
+                     weatherCity, weatherState, weatherCountry))
+            text += "  " LV_SYMBOL_OK;          // the one shown now
+
+        lv_obj_t *btn = lv_list_add_button(savedList, LV_SYMBOL_GPS, text.c_str());
+
+        lv_obj_add_event_cb(btn, savedCityClicked, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
+    }
+}
+
+// switch the weather to a saved city
+void savedCityClicked(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+
+    if (i < 0 || i >= cityHistCount)
+        return;
+
+    SavedCity pick = cityHist[i];           // copy: the list is reordered below
+
+    // already showing this one -> just go back
+    if (sameCity(pick.city, pick.state, pick.country,
+                 weatherCity, weatherState, weatherCountry))
+    {
+        goBackToWeather();
+        return;
+    }
+
+    // remember the current city in case the download fails
+    String oldCity = weatherCity, oldState = weatherState, oldCountry = weatherCountry;
+    float  oldLat = weatherLat, oldLon = weatherLon;
+    bool   oldHave = haveCoords;
+
+    weatherCity    = pick.city;
+    weatherState   = pick.state;
+    weatherCountry = pick.country;
+    weatherLat     = pick.lat;
+    weatherLon     = pick.lon;
+    haveCoords     = true;              // coordinates are already known
+
+    // offline: switch now, weather follows when WiFi connects
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        saveCity();
+        addCityToHistory();
+        updateWeatherDisplay();
+
+        lastWeatherUpdate = millis() - weatherInterval - 1;
+
+        goBackToWeather();
+        return;
+    }
+
+    setSavedStatus("Loading weather for " + pick.city + "...");
+    lv_refr_now(display);               // show the message before we block
+
+    if (getWeather())
+    {
+        saveCity();
+        addCityToHistory();             // moves it to the top
+        updateWeatherDisplay();
+
+        lastWeatherUpdate = millis();   // just fetched - restart the 15 min timer
+
+        goBackToWeather();
+    }
+    else
+    {
+        weatherCity = oldCity;
+        weatherState = oldState;
+        weatherCountry = oldCountry;
+        weatherLat = oldLat;
+        weatherLon = oldLon;
+        haveCoords = oldHave;
+
+        setSavedStatus("Couldn't reach the weather service\nTry again in a moment");
+    }
+}
+
+// "Sure?" shows in red; "Clear" uses the normal button colour
+static void setClearButtonRed(bool red)
+{
+    if (!savedClearBtn)
+        return;
+
+    if (red)
+        lv_obj_set_style_bg_color(savedClearBtn,
+                                  lv_palette_main(LV_PALETTE_RED), 0);
+    else
+        lv_obj_remove_local_style_prop(savedClearBtn, LV_STYLE_BG_COLOR, 0);
+}
+
+static void disarmClear()
+{
+    clearArmed = false;
+
+    if (clearDisarmTimer)
+    {
+        lv_timer_delete(clearDisarmTimer);
+        clearDisarmTimer = nullptr;
+    }
+
+    if (savedClearLbl)
+        lv_label_set_text(savedClearLbl, "Clear");
+
+    setClearButtonRed(false);
+}
+
+// first tap asks for confirmation, a second tap within 3 s clears
+void savedClearClicked(lv_event_t *e)
+{
+    if (!clearArmed)
+    {
+        clearArmed = true;
+        lv_label_set_text(savedClearLbl, "Sure?");
+        setClearButtonRed(true);
+        setSavedStatus("Tap again to clear all saved cities");
+
+        clearDisarmTimer = lv_timer_create(
+            [](lv_timer_t *t)
+            {
+                clearDisarmTimer = nullptr;     // one-shot timer deletes itself
+                clearArmed = false;
+
+                if (savedClearLbl)
+                    lv_label_set_text(savedClearLbl, "Clear");
+
+                setClearButtonRed(false);
+                setSavedStatus("Tap a city to show its weather");
+            },
+            3000,
+            NULL);
+
+        lv_timer_set_repeat_count(clearDisarmTimer, 1);
+        return;
+    }
+
+    disarmClear();
+
+    cityHistCount = 0;
+    saveCityHistory();
+    refreshSavedList();
+
+    setSavedStatus("Cleared - new cities will be saved\nas you use them");
+}
+
+void createSavedCitiesScreen()
+{
+    savedScreen = lv_obj_create(NULL);
+
+    lv_obj_set_style_bg_color(savedScreen, lv_color_hex(weatherBgColor), 0);
+    lv_obj_remove_flag(savedScreen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(savedScreen, gestureEvent, LV_EVENT_GESTURE, NULL);
+
+    // ---------- Back | title | Clear ----------
+
+    lv_obj_t *backBtn = lv_button_create(savedScreen);
+    lv_obj_set_size(backBtn, 80, 36);
+    lv_obj_align(backBtn, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_add_event_cb(backBtn, [](lv_event_t *e) { goBackToWeather(); },
+                        LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *backLbl = lv_label_create(backBtn);
+    lv_label_set_text(backLbl, LV_SYMBOL_LEFT " Back");
+    lv_obj_center(backLbl);
+
+    savedTitle = lv_label_create(savedScreen);
+    lv_label_set_text(savedTitle, "Saved Cities");
+    lv_obj_set_style_text_color(savedTitle, lv_color_hex(weatherTextColor), 0);
+    lv_obj_align(savedTitle, LV_ALIGN_TOP_MID, 0, 20);
+
+    lv_obj_t *clearBtn = lv_button_create(savedScreen);
+    savedClearBtn = clearBtn;
+    lv_obj_set_size(clearBtn, 80, 36);
+    lv_obj_align(clearBtn, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_add_event_cb(clearBtn, savedClearClicked, LV_EVENT_CLICKED, NULL);
+
+    savedClearLbl = lv_label_create(clearBtn);
+    lv_label_set_text(savedClearLbl, "Clear");
+    lv_obj_center(savedClearLbl);
+
+    // ---------- status line ----------
+
+    savedStatus = lv_label_create(savedScreen);
+    lv_obj_set_width(savedStatus, 300);
+    lv_obj_set_style_text_align(savedStatus, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(savedStatus, lv_color_hex(weatherTextColor), 0);
+    lv_obj_align(savedStatus, LV_ALIGN_TOP_MID, 0, 56);
+
+    // ---------- list (up to 8, newest first; scrolls if needed) ----------
+
+    savedList = lv_list_create(savedScreen);
+    lv_obj_set_size(savedList, 300, 300);       // scrolls if all 8 don't fit
+
+    // ---------- bottom button: Add City ----------
+
+    lv_obj_t *addCityBtn = lv_button_create(savedScreen);
+    lv_obj_set_size(addCityBtn, 140, 44);
+    lv_obj_align(addCityBtn, LV_ALIGN_BOTTOM_MID, 0, -14);
+    lv_obj_add_event_cb(addCityBtn, [](lv_event_t *e) { goToAddCity(); },
+                        LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *addCityLbl = lv_label_create(addCityBtn);
+    lv_label_set_text(addCityLbl, LV_SYMBOL_PLUS "  Add City");
+    lv_obj_center(addCityLbl);
+    lv_obj_align(savedList, LV_ALIGN_TOP_MID, 0, 100);
+
+    // forget pointers (and any pending timer) when the screen is deleted
+    lv_obj_add_event_cb(
+        savedScreen,
+        [](lv_event_t *e)
+        {
+            if (clearDisarmTimer)
+            {
+                lv_timer_delete(clearDisarmTimer);
+                clearDisarmTimer = nullptr;
+            }
+
+            clearArmed = false;
+            savedScreen = nullptr;
+            savedList = nullptr;
+            savedStatus = nullptr;
+            savedTitle = nullptr;
+            savedClearLbl = nullptr;
+            savedClearBtn = nullptr;
+        },
+        LV_EVENT_DELETE,
+        NULL);
+}
+
+void goToSavedCities()
+{
+    if (!savedScreen)
+        createSavedCitiesScreen();
+
+    currentScreen = SCREEN_SAVEDCITIES;
+
+    disarmClear();
+    refreshSavedList();
+    setSavedStatus("Tap a city to show its weather\n(newest first, up to " +
+                   String(CITY_HIST_MAX) + ")");
+
+    lv_screen_load_anim(
+        savedScreen,
+        LV_SCR_LOAD_ANIM_OVER_LEFT,
+        250,
+        0,
+        false);
+}
+
+// =====================================================
 // SD INIT
 // =====================================================
 
@@ -5242,6 +5783,11 @@ void setup()
 
     loadWifiCredentials();
     loadCity();
+    loadCityHistory();
+
+    // existing setup: the current city already has weather -> list it
+    if (cityHistCount == 0 && haveCoords)
+        addCityToHistory();
     loadWeatherColors();
 
     createHomeScreen();
@@ -5518,6 +6064,8 @@ void updateWeatherDisplay()
     lv_label_set_text(
         cityNameLabel,
         cityWithState().c_str());
+
+    fitCityNameFont();          // re-check size for the (possibly new) name
 
     sprintf(
         buffer,
